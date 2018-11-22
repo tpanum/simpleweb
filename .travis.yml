@@ -12,4 +12,5 @@ notifications:
   email: false
 
 script:
+  - go get ./...
   - go test -v -race ./...  # Run all the tests with the race detector enabled
