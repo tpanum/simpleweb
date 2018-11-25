@@ -36,10 +36,11 @@ func (u *User) IsValidPassword(password string) bool {
 }
 
 var (
-	EmptyEmailErr = errors.New("email cannot be empty")
-	EmptyIdErr    = errors.New("id cannot be empty")
-	StoreFullErr  = errors.New("store is full")
-	UserExistsErr = errors.New("user already exists")
+	EmptyEmailErr    = errors.New("email cannot be empty")
+	EmptyIdErr       = errors.New("id cannot be empty")
+	EmptyPasswordErr = errors.New("password cannot be empty")
+	StoreFullErr     = errors.New("store is full")
+	UserExistsErr    = errors.New("user already exists")
 )
 
 type UserStore interface {
