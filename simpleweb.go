@@ -163,6 +163,19 @@ func (a *authorizer) AuthorizeCtxMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (a *authorizer) MustBeAuthorized(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, err := a.userFromRequest(r)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), CtxUser{}, u))
+		next.ServeHTTP(w, r)
+	})
+}
+
 var (
 	InvalidLoginErr = errors.New("email or password is incorrect")
 )
