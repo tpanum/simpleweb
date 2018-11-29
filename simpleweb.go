@@ -115,41 +115,50 @@ func NewAuthorizer(us UserStore, opts ...AuthorizerOpt) *authorizer {
 	return a
 }
 
-func (a *authorizer) IsAuthorizedMiddleware(next http.Handler) http.Handler {
+func (a *authorizer) userFromRequest(r *http.Request) (*User, error) {
+	cookie, err := r.Cookie(a.ckey)
+	if err != nil {
+		return nil, err
+	}
+
+	jwtToken, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+		}
+
+		return []byte(a.skey), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	claims, ok := jwtToken.Claims.(jwt.MapClaims)
+	if !ok || !jwtToken.Valid {
+		return nil, fmt.Errorf("unable to read claims from jwt")
+	}
+
+	id, ok := claims[JWT_KEY_ID].(string)
+	if !ok {
+		return nil, fmt.Errorf("unable to find id in jwt")
+	}
+
+	u, ok := a.us.GetByID(id)
+	if !ok {
+		return nil, fmt.Errorf("unable to find user with id from jwt")
+	}
+
+	return u, nil
+}
+
+func (a *authorizer) AuthorizeCtxMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(a.ckey)
+		u, err := a.userFromRequest(r)
 		if err != nil {
-			return
-		}
-
-		jwtToken, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
-			}
-
-			return []byte(a.skey), nil
-		})
-		if err != nil {
-			return
-		}
-
-		claims, ok := jwtToken.Claims.(jwt.MapClaims)
-		if !ok || !jwtToken.Valid {
-			return
-		}
-
-		id, ok := claims[JWT_KEY_ID].(string)
-		if !ok {
-			return
-		}
-
-		u, ok := a.us.GetByID(id)
-		if !ok {
+			next.ServeHTTP(w, r)
 			return
 		}
 
 		r = r.WithContext(context.WithValue(r.Context(), CtxUser{}, u))
-
 		next.ServeHTTP(w, r)
 	})
 }
@@ -158,8 +167,38 @@ var (
 	InvalidLoginErr = errors.New("email or password is incorrect")
 )
 
+func (a *authorizer) LoginUser(email, password string) (string, error) {
+	validTo := time.Now().Add(a.expireAfter)
+	u, ok := a.us.GetByEmail(email)
+	if !ok {
+		return "", InvalidLoginErr
+	}
+
+	if ok := u.IsValidPassword(password); !ok {
+		return "", InvalidLoginErr
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		JWT_KEY_ID:          u.ID,
+		JWT_KEY_VALID_UNTIL: validTo.Unix(),
+	})
+
+	tokenString, err := token.SignedString([]byte(a.skey))
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
+}
+
+func (a *authorizer) WriteTokenToResponse(token string, w http.ResponseWriter) {
+	validTo := time.Now().Add(a.expireAfter)
+	cookie := http.Cookie{Name: a.ckey, Value: token, Expires: validTo}
+	http.SetCookie(w, &cookie)
+}
+
 func (a *authorizer) LoginHandler() http.Handler {
-	requestToToken := func(r *http.Request, validTo time.Time) (string, error) {
+	requestToToken := func(r *http.Request) (string, error) {
 		email := r.FormValue("email")
 		if email == "" {
 			return "", EmptyEmailErr
@@ -170,52 +209,29 @@ func (a *authorizer) LoginHandler() http.Handler {
 			return "", EmptyPasswordErr
 		}
 
-		u, ok := a.us.GetByEmail(email)
-		if !ok {
-			return "", InvalidLoginErr
-		}
-
-		if ok := u.IsValidPassword(password); !ok {
-			return "", InvalidLoginErr
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-			JWT_KEY_ID:          u.ID,
-			JWT_KEY_VALID_UNTIL: validTo.Unix(),
-		})
-
-		tokenString, err := token.SignedString([]byte(a.skey))
-		if err != nil {
-			return "", err
-		}
-
-		return tokenString, nil
+		return a.LoginUser(email, password)
 	}
 
 	if a.resultHandler != nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			validTo := time.Now().Add(a.expireAfter)
-			token, err := requestToToken(r, validTo)
+			token, err := requestToToken(r)
 			if err != nil {
 				a.resultHandler(err, w, r)
 			}
 
-			cookie := http.Cookie{Name: a.ckey, Value: token, Expires: validTo}
-			http.SetCookie(w, &cookie)
+			a.WriteTokenToResponse(token, w)
 			a.resultHandler(nil, w, r)
 		})
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		validTo := time.Now().Add(a.expireAfter)
-		token, err := requestToToken(r, validTo)
+		token, err := requestToToken(r)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(err.Error()))
 		}
 
-		cookie := http.Cookie{Name: a.ckey, Value: token, Expires: validTo}
-		http.SetCookie(w, &cookie)
+		a.WriteTokenToResponse(token, w)
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
 }

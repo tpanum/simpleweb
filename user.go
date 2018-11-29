@@ -3,11 +3,27 @@ package simpleweb
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+)
+
+const (
+	MinPassLength = 6
+)
+
+var (
+	emailChecker       = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
+	InvalidEmailFmtErr = errors.New("not a valid email address")
+	TooShortPass       = fmt.Errorf("too short password, must be atleast %d chars", MinPassLength)
+	EmptyEmailErr      = errors.New("email cannot be empty")
+	EmptyIdErr         = errors.New("id cannot be empty")
+	EmptyPasswordErr   = errors.New("password cannot be empty")
+	StoreFullErr       = errors.New("store is full")
+	UserExistsErr      = errors.New("user already exists")
 )
 
 type User struct {
@@ -23,6 +39,14 @@ func NewUser(email, password string) (*User, error) {
 		return nil, err
 	}
 
+	if !emailChecker.MatchString(email) {
+		return nil, InvalidEmailFmtErr
+	}
+
+	if len(password) < MinPassLength {
+		return nil, InvalidEmailFmtErr
+	}
+
 	return &User{
 		ID:             uuid.New(),
 		Email:          email,
@@ -34,14 +58,6 @@ func (u *User) IsValidPassword(password string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(u.HashedPassword), []byte(password))
 	return err == nil
 }
-
-var (
-	EmptyEmailErr    = errors.New("email cannot be empty")
-	EmptyIdErr       = errors.New("id cannot be empty")
-	EmptyPasswordErr = errors.New("password cannot be empty")
-	StoreFullErr     = errors.New("store is full")
-	UserExistsErr    = errors.New("user already exists")
-)
 
 type UserStore interface {
 	GetByID(string) (*User, bool)
